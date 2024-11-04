@@ -23,7 +23,7 @@ int main(int argc, char *argv[])
 	DWORD size;
 	struct import_key_blob_aes_128 import_key_blob = { 0 };
 	DWORD mode;
-	DWORD file_src_size;
+	DWORD size_left;
 	HANDLE file_src = INVALID_HANDLE_VALUE;
 	HANDLE file_dst = INVALID_HANDLE_VALUE;
 	HANDLE file_key = INVALID_HANDLE_VALUE;
@@ -34,6 +34,7 @@ int main(int argc, char *argv[])
 	BYTE data1[256], data2[256];
 	char filename[MAX_PATH];
 	struct alarmo_aes aes = { 0 };
+	BOOL file_src_ciph;
 
 	if (argc != 3)
 	{
@@ -64,7 +65,7 @@ int main(int argc, char *argv[])
 	}
 
 	CloseHandle(file_key);
-	
+
 	strcpy(filename, argv[1]);
 	file_src = CreateFileA(filename, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
 	if (file_src == INVALID_HANDLE_VALUE)
@@ -83,10 +84,38 @@ int main(int argc, char *argv[])
 		goto cleanup;
 	}
 
-	if (!WriteFile(file_dst, ciph_header, sizeof(ciph_header), &bw, NULL))
+	size_left = GetFileSize(file_src, NULL);
+
+	if (!ReadFile(file_src, data1, sizeof(ciph_header), &br, NULL))
 	{
-		printf("ERROR: WriteFile error 0x%x\n", GetLastError());
+		printf("ERROR: ReadFile error 0x%x\n", GetLastError());
 		goto cleanup;
+	}
+
+	file_src_ciph = ((br == sizeof(ciph_header)) && (memcmp(data1, ciph_header, sizeof(ciph_header)) == 0));
+
+	printf("%s ...\n", file_src_ciph ? "decrypt" : "encrypt");
+
+	if (file_src_ciph)
+	{
+		size_left = size_left - sizeof(ciph_header) - 256;
+	}
+	else
+	{
+		if (SetFilePointer(file_src, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER)
+		{
+			printf("ERROR: SetFilePointer failed\n");
+			goto cleanup;
+		}
+	}
+
+	if (!file_src_ciph)
+	{
+		if (!WriteFile(file_dst, ciph_header, sizeof(ciph_header), &bw, NULL))
+		{
+			printf("ERROR: WriteFile error 0x%x\n", GetLastError());
+			goto cleanup;
+		}
 	}
 
 	if (!CryptAcquireContext(&hprov, NULL, MS_ENH_RSA_AES_PROV, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
@@ -114,21 +143,15 @@ int main(int argc, char *argv[])
 		goto cleanup;
 	}
 
-	file_src_size = GetFileSize(file_src, NULL);
-
-	while (file_src_size > 0)
+	while (size_left > 0)
 	{
-		if (!ReadFile(file_src, data1, 16, &br, NULL))
+		if (!ReadFile(file_src, data1, __min(size_left, 16), &br, NULL))
 		{
 			printf("ERROR: ReadFile error 0x%x\n", GetLastError());
 			goto cleanup;
 		}
 
-		if (br < 16)
-		{
-			br = br;
-		}
-		file_src_size = file_src_size - br;
+		size_left = size_left - br;
 
 		size = 16;
 		memcpy(data2, aes.iv, sizeof(aes.iv));
@@ -155,13 +178,16 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	if (!WriteFile(file_dst, ciph_sig, sizeof(ciph_sig), &bw, NULL))
+	if (!file_src_ciph)
 	{
-		printf("ERROR: WriteFile error 0x%x\n", GetLastError());
-		goto cleanup;
+		if (!WriteFile(file_dst, ciph_sig, sizeof(ciph_sig), &bw, NULL))
+		{
+			printf("ERROR: WriteFile error 0x%x\n", GetLastError());
+			goto cleanup;
+		}
 	}
 
-	printf("OK\n");
+	printf("done\n");
 
 	retval = 0;
 
